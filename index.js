@@ -230,8 +230,13 @@ class Closeup extends RxComponent {
   }
 }
 
-render(<Closeup style={{
+const centered = (width='100%', height='100%') => ({
   position: 'absolute',
-  top: 0, left: 0,
-  width: '100%', height: '100%',
-}} src={drawing} />, main)
+  top: '50%', left: '50%',
+  width: asLength(width),
+  height: asLength(height),
+  transform: 'translate(-50%, -50%)',
+  overflow: 'hidden',
+})
+
+render(<Closeup style={centered()} src={drawing} />, main)
