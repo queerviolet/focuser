@@ -5,7 +5,7 @@ import {render} from 'react-dom'
 
 import * as posenet from '@tensorflow-models/posenet'
 
-import {keypoint, label, frame as frameClass, content, fillContainer} from './keypoints.css'
+import {keypoint, label, frame as frameClass, content, selected, fillContainer} from './keypoints.css'
 import drawing from './looking-out.png'
 import { METHODS } from 'http';
 
@@ -41,7 +41,7 @@ const loadImage = src => new Promise(
   }
 )
 
-const classes = (...classes) => classes.join(' ')
+const classes = (...classes) => classes.filter(_ => _).join(' ')
 
 const aspect = ({width, height}) => width / height
 
@@ -92,8 +92,12 @@ const estimatePose = async (image, posenetSize=256) => {
 }
 
 import RxComponent, {latestState} from './rxact'
-import {BehaviorSubject, Observable, of, from, fromEvent, pipe, combineLatest as latest} from 'rxjs'
+import {BehaviorSubject, Observable, merge, of, from, fromEvent, pipe, combineLatest as latest} from 'rxjs'
 import {map, mergeMap, pluck} from 'rxjs/operators'
+
+global.merge = merge
+global.of = of
+global.Cell = BehaviorSubject
 
 const rxwait = f => (...args) => from(f(...args))
 const rxwaitv = f => args => from(f(...args))
@@ -112,11 +116,17 @@ class Closeup extends RxComponent {
   state = {keypoints: null}
 
   static defaultProps = {
-    posenetSize: 256
+    part: 'nose',
+    showKeypoints: true,
+    posenetSize: 256,
   }
 
   frame$ = new BehaviorSubject
   frameDidMount = frame => frame && this.frame$.next(frame)
+
+  part$ = new BehaviorSubject(this.props.part)
+  keypointWasClicked = evt =>
+    this.part$.next(evt.target.dataset.part)
 
   go() {
     const posenetSize$ = this.prop$('posenetSize')
@@ -128,7 +138,7 @@ class Closeup extends RxComponent {
       mergeMap(rxwaitv(estimatePose))
     )
 
-    const frameRect$ = latest(this.frame$, fromEvent(window, 'resize')).pipe(
+    const frameRect$ = latest(this.frame$, merge(of(null), fromEvent(window, 'resize'))).pipe(
       map(([frame]) => frame.getBoundingClientRect())
     )
 
@@ -157,15 +167,20 @@ class Closeup extends RxComponent {
       )
     )
 
-    const nose$ = namedKeypoints$.pipe(pluck('nose'))
+    const part$ = merge(this.prop$('part'), this.part$).pipe(
+      map(x => (console.log(x), x))
+    )
 
-    const contentOffset$ = latest(contentSize$, frameRect$, nose$).pipe(
-      map(([size, frame, {position}]) => {
+    const target$ = latest(namedKeypoints$, part$).pipe(
+      map(([kps, part]) => kps[part].position)
+    )
+
+    const contentOffset$ = latest(contentSize$, frameRect$, target$).pipe(
+      map(([size, frame, {x, y}]) => {
         const center = {x: frame.width / 2, y: frame.height / 2}
-        console.log(center)
         return {
-          x: Math.max(zclamp(center.x - position.x), -size.spillover.x),
-          y: Math.max(zclamp(center.y - position.y), -size.spillover.y)
+          x: Math.max(zclamp(center.x - x), -size.spillover.x),
+          y: Math.max(zclamp(center.y - y), -size.spillover.y)
         }
       })
     )
@@ -174,6 +189,7 @@ class Closeup extends RxComponent {
       contentSize: contentSize$,
       keypoints: keypoints$,
       contentOffset: contentOffset$,
+      part: part$
     })
   }
 
@@ -188,11 +204,15 @@ class Closeup extends RxComponent {
   get keypoints() {
     const {showKeypoints} = this.props
     if (!showKeypoints) return null
-    const {keypoints} = this.state
+    const {keypoints, part: currentPart} = this.state
     if (!keypoints) return null
     return keypoints.map(
       ({part, position: {x: left, y: top}}) =>
-        <div key={part} className={keypoint} style={absolute({top, left})}>
+        <div key={part}
+             data-part={part}
+             onClick={this.keypointWasClicked}
+             className={classes(keypoint, part === currentPart && selected)}
+             style={absolute({top, left})}>
           <span className={label}>{part}</span>
         </div>
     )
