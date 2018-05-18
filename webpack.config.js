@@ -21,6 +21,7 @@ module.exports = () => ({
     ]
   },
   mode: 'development',
+  devtool: 'source-map',
   resolve: {
     extensions: ['.jsx', '.js', '.json']
   },
