@@ -71,8 +71,8 @@ const sizeThatCovers = (
         scaledBy: frame.width / image.width,
       }
   size.spillover = {
-    x: frame.width - size.width,
-    y: frame.height - size.height
+    x: size.width - frame.width,
+    y: size.height - frame.height,
   }
   return size
 }
@@ -91,12 +91,22 @@ const estimatePose = async (image, posenetSize=256) => {
   }
 }
 
-import RxComponent from './rxact'
-import {BehaviorSubject, Observable, of, from, pipe, combineLatest as latest} from 'rxjs'
+import RxComponent, {latestState} from './rxact'
+import {BehaviorSubject, Observable, of, from, fromEvent, pipe, combineLatest as latest} from 'rxjs'
 import {map, mergeMap, pluck} from 'rxjs/operators'
 
 const rxwait = f => (...args) => from(f(...args))
 const rxwaitv = f => args => from(f(...args))
+
+const zclamp = x => Math.min(x, 0)
+
+const scaleKeypointPositionsBy = scale => kp => ({
+  ...kp,
+  position: {
+    x: scale.x * kp.position.x,
+    y: scale.y * kp.position.y,
+  }
+})
 
 class Closeup extends RxComponent {
   state = {keypoints: null}
@@ -118,9 +128,13 @@ class Closeup extends RxComponent {
       mergeMap(rxwaitv(estimatePose))
     )
 
-    const contentSize$ = latest(this.frame$, image$).pipe(
+    const frameRect$ = latest(this.frame$, fromEvent(window, 'resize')).pipe(
+      map(([frame]) => frame.getBoundingClientRect())
+    )
+
+    const contentSize$ = latest(frameRect$, image$).pipe(
       map(([frame, image]) =>
-        sizeThatCovers(frame.getBoundingClientRect(), image.size)
+        sizeThatCovers(frame, image.size)
       )
     )
 
@@ -131,85 +145,49 @@ class Closeup extends RxComponent {
             x: contentSize.width / posenetSize,
             y: contentSize.height / posenetSize
           }
-          return keypoints.map(
-            kp => ({
-              ...kp,
-              position: {
-                x: scale.x * kp.position.x,
-                y: scale.y * kp.position.y,
-              }
-            })
-          )
+          return keypoints.map(scaleKeypointPositionsBy(scale))
         }
       )
     )
 
-    // const contentFrame$ = 
-
-    return latest(contentSize$, keypoints$).pipe(
-      map(([contentSize, keypoints]) => ({contentSize, keypoints}))
+    const namedKeypoints$ = keypoints$.pipe(
+      map(
+        keypoints => keypoints
+          .reduce((points, kp) => (points[kp.part] = kp, points), {})
+      )
     )
-  }
 
-  
+    const nose$ = namedKeypoints$.pipe(pluck('nose'))
 
-  // componentDidMount() {
-  //   this.componentDidUpdate(null, null)
-  // }
+    const contentOffset$ = latest(contentSize$, frameRect$, nose$).pipe(
+      map(([size, frame, {position}]) => {
+        const center = {x: frame.width / 2, y: frame.height / 2}
+        console.log(center)
+        return {
+          x: Math.max(zclamp(center.x - position.x), -size.spillover.x),
+          y: Math.max(zclamp(center.y - position.y), -size.spillover.y)
+        }
+      })
+    )
 
-  // componentDidUpdate(oldProps, oldState) {
-  //   const {props, state} = this
-  //   if (state.imageSrc !== props.src || state.posenetSize !== props.posenetSize)
-  //     this.load(src, posenetSize)
-  // }
-
-  // updateScaledKeypoints() {
-  //   const {state} = this    
-  //   if (state.contentSize && state.contentSize !== contentSize) {
-  //     const {scaledBy: scale} = state.contentSize
-  //     this.setState({
-  //       scaledKeypoints: keypoints.map(
-  //         kp => ({
-  //           ...kp,
-  //           position: {
-  //             x: scale * kp.position.x,
-  //             y: scale * kp.position.y,
-  //           }
-  //         })
-  //       )
-  //     })
-  //   }      
-  // }
-  
-  async load(src, posenetSize) {
-    const img = await loadImage(src)
-    const {width, height} = img
-    const imageSize = {width, height}
-    const keypoints = await estimatePose(img, posenetSize)    
-  }
-
-
-  // frameDidMount = frame => {
-  //   this.frame = frame
-  //   this.recenter()
-  // }
-
-  recenter = ({imageSize, keypoints}=this.state) => {
-    const {frame} = this
-    if (!frame || !imageSize || !keypoints) return
-    const frameRect = frame.getBoundingClientRect()
-    const contentSize = sizeThatCovers(frameRect, imageSize)
-    this.setState({
-      contentSize,
+    return latestState({
+      contentSize: contentSize$,
+      keypoints: keypoints$,
+      contentOffset: contentOffset$,
     })
   }
 
   get contentStyle() {
-    const {contentSize} = this.state
-    return absolute(contentSize)
+    const {contentSize, contentOffset: {x, y}={x: 0, y: 0}} = this.state
+    return {
+      ...absolute(contentSize),
+      transform: `translate(${x}px, ${y}px)`
+    }
   }
 
   get keypoints() {
+    const {showKeypoints} = this.props
+    if (!showKeypoints) return null
     const {keypoints} = this.state
     if (!keypoints) return null
     return keypoints.map(
@@ -236,7 +214,6 @@ class Closeup extends RxComponent {
 
 render(<Closeup style={{
   position: 'absolute',
-  top: '50%', left: '50%',
-  width: 1024, height: 256,
-  transform: 'translate(-50%, -50%)'
+  top: 0, left: 0,
+  width: '100%', height: '100%',
 }} src={drawing} />, main)

@@ -30,3 +30,15 @@ export default class extends React.Component {
     if (props !== oldProps) this.props$.next(props)
   }
 }
+
+import {from, combineLatest as latest} from 'rxjs'
+import {map} from 'rxjs/operators'
+export const latestState = object =>
+  latest(
+    ...Object.entries(object)
+      .map(
+        ([k, v]) => from(v).pipe(map(v => ({ [k]: v })))
+      )
+  ).pipe(
+    map(states => Object.assign(...states))
+  )
