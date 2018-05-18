@@ -1,6 +1,6 @@
 import React from 'react'
 
-import {BehaviorSubject} from 'rxjs'
+import {BehaviorSubject, isObservable} from 'rxjs'
 import {pluck} from 'rxjs/operators'
 
 export default class extends React.Component {
@@ -14,7 +14,11 @@ export default class extends React.Component {
 
   componentDidMount() {
     this.componentDidUpdate()
-    this.subscription = this.go(this.props$)
+    const states = this.go(this.props$)
+        , states$ = isObservable(states)
+          ? states
+          : latestState(states)
+    this.subscription = states$
       .subscribe(update => {
         console.log('update:', update)
         this.setState(update)
@@ -31,14 +35,34 @@ export default class extends React.Component {
   }
 }
 
-import {from, combineLatest as latest} from 'rxjs'
-import {map} from 'rxjs/operators'
+import {combineLatest as latest, from} from 'rxjs'
+import {map, switchMap} from 'rxjs/operators'
+
+const isPromise = x => x && typeof x.then === 'function'
+
+export const asObservable = x =>
+  isObservable(x)
+    ? x
+    :
+  isPromise(x)
+    ? from(x)
+    :
+    of(x)
+
 export const latestState = object =>
+  Array.isArray(object)
+    ? latest(...object)
+    :
   latest(
     ...Object.entries(object)
       .map(
-        ([k, v]) => from(v).pipe(map(v => ({ [k]: v })))
+        ([k, v]) => asObservable(v).pipe(map(v => ({ [k]: v })))
       )
   ).pipe(
     map(states => Object.assign(...states))
+  )
+
+export const rxer = f => (...args) => latest(...args.map(asObservable))
+  .pipe(
+    switchMap(args => asObservable(f(...args)))
   )

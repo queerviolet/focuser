@@ -91,9 +91,9 @@ const estimatePose = async (image, posenetSize=256) => {
   }
 }
 
-import RxComponent, {latestState} from './rxact'
+import RxComponent from './rxact'
 import {BehaviorSubject, Observable, merge, of, from, fromEvent, pipe, combineLatest as latest} from 'rxjs'
-import {map, mergeMap, pluck} from 'rxjs/operators'
+import {map, mergeMap, pluck, distinctUntilChanged} from 'rxjs/operators'
 
 global.merge = merge
 global.of = of
@@ -167,9 +167,7 @@ class Closeup extends RxComponent {
       )
     )
 
-    const part$ = merge(this.prop$('part'), this.part$).pipe(
-      map(x => (console.log(x), x))
-    )
+    const part$ = merge(this.prop$('part'), this.part$).pipe(distinctUntilChanged())
 
     const target$ = latest(namedKeypoints$, part$).pipe(
       map(([kps, part]) => kps[part].position)
@@ -185,12 +183,12 @@ class Closeup extends RxComponent {
       })
     )
 
-    return latestState({
+    return {
       contentSize: contentSize$,
       keypoints: keypoints$,
       contentOffset: contentOffset$,
       part: part$
-    })
+    }
   }
 
   get contentStyle() {
