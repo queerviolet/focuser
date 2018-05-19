@@ -6,7 +6,7 @@ import {pluck} from 'rxjs/operators'
 export default class extends React.Component {
   props$ = new BehaviorSubject(this.props)
   
-  go() { return of() }
+  states() { return of() }
 
   prop$(name) {
     return this.props$.pipe(pluck(name))
@@ -14,7 +14,7 @@ export default class extends React.Component {
 
   componentDidMount() {
     this.componentDidUpdate()
-    const states = this.go(this.props$)
+    const states = this.states(this.props$)
         , states$ = isObservable(states)
           ? states
           : latestState(states)
@@ -36,7 +36,7 @@ export default class extends React.Component {
 }
 
 import {combineLatest as latest, from} from 'rxjs'
-import {map, switchMap} from 'rxjs/operators'
+import {map, switchMap, startWith} from 'rxjs/operators'
 
 const isPromise = x => x && typeof x.then === 'function'
 
@@ -62,7 +62,26 @@ export const latestState = object =>
     map(states => Object.assign(...states))
   )
 
-export const rxer = f => (...args) => latest(...args.map(asObservable))
+export const rxed = f => (...args) => latest(...args.map(asObservable))
   .pipe(
     switchMap(args => asObservable(f(...args)))
   )
+
+rxed.plucking = (...props) => f => (...args) => {
+  const rx = rxed(f)(...args)
+  const descriptors = Object.assign(...props.map(
+    prop => ({
+      [prop]: {
+        get() {
+          return rx.pipe(pluck(prop))
+        }
+      }
+    })
+  ))
+  Object.defineProperties(rx, descriptors)
+  return rx
+}
+
+export const optional = ($, defaultValue) => $.pipe(
+  startWith(defaultValue)
+)

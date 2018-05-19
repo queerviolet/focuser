@@ -29,7 +29,9 @@ const transform = ({x=0, y=0}={}, scale=1) => ({
   transformOrigin: '0 0'
 })
 
-const loadImage = src => new Promise(
+import {rxed, optional} from './rxact'
+
+const loadImage = rxed.plucking('size')(src => new Promise(
   (resolve, reject) => {
     const img = new Image()
     img.onload = () => {
@@ -39,7 +41,7 @@ const loadImage = src => new Promise(
     img.onerror = reject
     img.src = src
   }
-)
+))
 
 const classes = (...classes) => classes.filter(_ => _).join(' ')
 
@@ -53,7 +55,7 @@ const scaleThatCovers = (
     ? frame.height / image.height
     : frame.width / image.width
 
-const sizeThatCovers = (
+const sizeThatCovers = rxed((
   frame,
   image,
   frameAspect=aspect(frame),
@@ -65,7 +67,8 @@ const sizeThatCovers = (
         height: frame.height,
         scaledBy: frame.height / image.height,
       }
-      : {
+      :
+      {
         width: frame.width,
         height: frame.width / imageAspect,
         scaledBy: frame.width / image.width,
@@ -75,9 +78,9 @@ const sizeThatCovers = (
     y: size.height - frame.height,
   }
   return size
-}
+})
 
-const estimatePose = async (image, posenetSize=256) => {
+const estimatePose = rxed(async (image, posenetSize=256) => {
   const net = await posenetDidLoad
   image.width = image.height = posenetSize
   const pose = await net.estimateSinglePose(image, 1.0, false)  
@@ -89,11 +92,11 @@ const estimatePose = async (image, posenetSize=256) => {
     ...pose,
     posenetSize,    
   }
-}
+})    
 
 import RxComponent from './rxact'
-import {BehaviorSubject, Observable, merge, of, from, fromEvent, pipe, combineLatest as latest} from 'rxjs'
-import {map, mergeMap, pluck, distinctUntilChanged} from 'rxjs/operators'
+import {Subject, BehaviorSubject, merge, of, from, fromEvent, pipe, combineLatest as latest} from 'rxjs'
+import {map, mergeMap, pluck, filter, distinctUntilChanged} from 'rxjs/operators'
 
 global.merge = merge
 global.of = of
@@ -104,6 +107,10 @@ const rxwaitv = f => args => from(f(...args))
 
 const zclamp = x => Math.min(x, 0)
 
+const getBoundingRect = rxed(_ => _.getBoundingClientRect())
+const resized = fromEvent(window, 'resize')
+const watchBoundingRect = el$ => getBoundingRect(el$, optional(resized))
+
 const scaleKeypointPositionsBy = scale => kp => ({
   ...kp,
   position: {
@@ -112,8 +119,31 @@ const scaleKeypointPositionsBy = scale => kp => ({
   }
 })
 
+const keypointsForContentSize = rxed(({posenetSize, keypoints}, size) => {
+  const scale = {
+    x: size.width / posenetSize,
+    y: size.height / posenetSize
+  }
+  return keypoints.map(scaleKeypointPositionsBy(scale))
+})
+
+const byPart = rxed(keypoints => keypoints
+  .reduce((points, kp) => (points[kp.part] = kp, points), {}))
+
+const positionOfPart = rxed(
+  (keypoints, part) => keypoints[part].position
+)
+
+const contentOffsetFromAnchorToTarget = rxed((size, frame, {x, y}) => {
+  const target = {x: frame.width / 2, y: frame.height / 2}
+  return {
+    x: Math.max(zclamp(target.x - x), -size.spillover.x),
+    y: Math.max(zclamp(target.y - y), -size.spillover.y)
+  }
+})
+
 class Closeup extends RxComponent {
-  state = {keypoints: null}
+  state = {}
 
   static defaultProps = {
     part: 'nose',
@@ -121,75 +151,57 @@ class Closeup extends RxComponent {
     posenetSize: 256,
   }
 
-  frame$ = new BehaviorSubject
-  frameDidMount = frame => frame && this.frame$.next(frame)
-
-  part$ = new BehaviorSubject(this.props.part)
-  keypointWasClicked = evt =>
-    this.part$.next(evt.target.dataset.part)
-
-  go() {
+  states() {
+    // Get the input image src, and the size we'll be using for
+    // posenet. Posenet wants square input images, probably smaller
+    // than the image's true size (our default is 256x256).
     const posenetSize$ = this.prop$('posenetSize')
     const src$ = this.prop$('src')
 
-    const image$ = src$.pipe(mergeMap(rxwait(loadImage)))
+    // Also observe the size of our frame.
+    const frameRect$ = watchBoundingRect(this.frame$)
 
-    const pose$ = latest(image$, posenetSize$).pipe(
-      mergeMap(rxwaitv(estimatePose))
-    )
+    // Load the image and estimate the pose.
+    const image$ = loadImage(src$)
+    const pose$ = estimatePose(image$, posenetSize$)
 
-    const frameRect$ = latest(this.frame$, merge(of(null), fromEvent(window, 'resize'))).pipe(
-      map(([frame]) => frame.getBoundingClientRect())
-    )
+    // Calculate how large the image should be to cover the frame.
+    const contentSize$ = sizeThatCovers(frameRect$, image$.size)
 
-    const contentSize$ = latest(frameRect$, image$).pipe(
-      map(([frame, image]) =>
-        sizeThatCovers(frame, image.size)
-      )
-    )
+    // Scale posenet's keypoints to the actual content size,
+    // and reduce them into an object keyed by the name of the part
+    // for ease of use.
+    const keypoints$ = keypointsForContentSize(pose$, contentSize$)
+    const namedKeypoints$ = byPart(keypoints$)
 
-    const keypoints$ = latest(contentSize$, pose$).pipe(
-      map(
-        ([contentSize, {posenetSize, keypoints}]) => {
-          const scale = {
-            x: contentSize.width / posenetSize,
-            y: contentSize.height / posenetSize
-          }
-          return keypoints.map(scaleKeypointPositionsBy(scale))
-        }
-      )
-    )
+    // Lookup the position of the part we're trying to center.
+    const target$ = positionOfPart(namedKeypoints$, this.part$)
 
-    const namedKeypoints$ = keypoints$.pipe(
-      map(
-        keypoints => keypoints
-          .reduce((points, kp) => (points[kp.part] = kp, points), {})
-      )
-    )
+    // Finally, find the content offset that gets the target point
+    // as close to center as possible while still covering the frame.
+    const contentOffset$ = contentOffsetFromAnchorToTarget(contentSize$, frameRect$, target$)
 
-    const part$ = merge(this.prop$('part'), this.part$).pipe(distinctUntilChanged())
-
-    const target$ = latest(namedKeypoints$, part$).pipe(
-      map(([kps, part]) => kps[part].position)
-    )
-
-    const contentOffset$ = latest(contentSize$, frameRect$, target$).pipe(
-      map(([size, frame, {x, y}]) => {
-        const center = {x: frame.width / 2, y: frame.height / 2}
-        return {
-          x: Math.max(zclamp(center.x - x), -size.spillover.x),
-          y: Math.max(zclamp(center.y - y), -size.spillover.y)
-        }
-      })
-    )
-
+    // Return the stream of states we'll use for rendering.
     return {
       contentSize: contentSize$,
       keypoints: keypoints$,
       contentOffset: contentOffset$,
-      part: part$
+      part: this.part$
     }
   }
+
+  frame$ = new BehaviorSubject
+  frameDidMount = frame => frame && this.frame$.next(frame)
+
+  clickedPart$ = new BehaviorSubject
+  keypointWasClicked = evt =>
+    this.clickedPart$.next(evt.target.dataset.part)
+
+  part$ = merge(this.prop$('part'), this.clickedPart$)
+            .pipe(
+              filter(x => x),
+              distinctUntilChanged()
+            )
 
   get contentStyle() {
     const {contentSize, contentOffset: {x, y}={x: 0, y: 0}} = this.state
