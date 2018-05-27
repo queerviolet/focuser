@@ -1,7 +1,7 @@
 import React from 'react'
 
-import {BehaviorSubject, isObservable} from 'rxjs'
-import {pluck} from 'rxjs/operators'
+import {BehaviorSubject, isObservable, of} from 'rxjs'
+import {pluck, distinctUntilChanged} from 'rxjs/operators'
 
 export default class extends React.Component {
   props$ = new BehaviorSubject(this.props)
@@ -56,7 +56,10 @@ export const latestState = object =>
   latest(
     ...Object.entries(object)
       .map(
-        ([k, v]) => asObservable(v).pipe(map(v => ({ [k]: v })))
+        ([k, v]) => asObservable(v).pipe(
+          distinctUntilChanged(),
+          map(v => ({ [k]: v }))
+        )
       )
   ).pipe(
     map(states => Object.assign(...states))
@@ -64,7 +67,7 @@ export const latestState = object =>
 
 export const rxed = f => (...args) => latest(...args.map(asObservable))
   .pipe(
-    switchMap(args => asObservable(f(...args)))
+    switchMap(args => asObservable(f(...args)).pipe(distinctUntilChanged()))
   )
 
 rxed.plucking = (...props) => f => (...args) => {
